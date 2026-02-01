@@ -2,6 +2,12 @@
 
 ![AI Tank Battle](ai.wars.jpeg)
 
+## Play the Game
+
+Simply open `index.html` in a modern web browser. No build step or server required.
+
+Or play it online at: https://christhomas.github.io/aiwars/
+
 An autonomous tank battle simulator where AI-controlled tanks fight to the death in an arena. Watch as tanks with unique abilities clash using bullets, homing missiles, and predator tracking systems.
 
 ## Features
@@ -109,12 +115,6 @@ The game includes several optimizations to handle large numbers of tanks:
 | Missile Chance | 15% | Probability of missile ability |
 | Radar Range | 200px | Predator detection distance |
 | Missile Seek Range | 400px | Homing missile tracking distance |
-
-## Running the Game
-
-Simply open `index.html` in a modern web browser. No build step or server required.
-
-Or play it online at: https://christhomas.github.io/aiwars/
 
 ## Browser Support
 
