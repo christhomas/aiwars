@@ -114,11 +114,7 @@ The game includes several optimizations to handle large numbers of tanks:
 
 Simply open `index.html` in a modern web browser. No build step or server required.
 
-```bash
-# Or serve locally with any static file server
-python -m http.server 8000
-# Then open http://localhost:8000
-```
+Or play it online at: https://christhomas.github.io/aiwars/
 
 ## Browser Support
 
