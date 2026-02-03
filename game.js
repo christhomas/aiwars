@@ -2039,11 +2039,88 @@ function gameLoop(timestamp) {
 }
 
 function restartGame() {
+    syncUrlFromUI();
     initGame();
 }
 
 function togglePause() {
     paused = !paused;
+}
+
+function parsePercentParam(value, defaultPct) {
+    if (value == null) return defaultPct;
+    const raw = String(value).trim();
+    if (raw === '') return defaultPct;
+    const n = parseFloat(raw);
+    if (!Number.isFinite(n)) return defaultPct;
+    return Math.min(100, Math.max(0, n));
+}
+
+function applySettingsFromUrlToUI() {
+    const params = new URLSearchParams(window.location.search);
+    if ([...params.keys()].length === 0) return;
+
+    const tankCountInput = document.getElementById('tankCount');
+    const gameModeSelect = document.getElementById('gameMode');
+    const predatorPercentInput = document.getElementById('predatorPercent');
+    const missilePercentInput = document.getElementById('missilePercent');
+    const healthPointsInput = document.getElementById('healthPoints');
+
+    if (tankCountInput && params.has('tanks')) {
+        const v = parseInt(params.get('tanks'), 10);
+        if (Number.isFinite(v)) tankCountInput.value = String(v);
+    }
+
+    if (gameModeSelect && params.has('mode')) {
+        const mode = String(params.get('mode')).toLowerCase();
+        gameModeSelect.value = mode === 'teams' ? 'teams' : 'random';
+    }
+
+    if (predatorPercentInput && (params.has('pred') || params.has('predators'))) {
+        const v = params.get('pred') ?? params.get('predators');
+        predatorPercentInput.value = String(parsePercentParam(v, 15));
+    }
+
+    if (missilePercentInput && (params.has('rockets') || params.has('missiles'))) {
+        const v = params.get('rockets') ?? params.get('missiles');
+        missilePercentInput.value = String(parsePercentParam(v, 15));
+    }
+
+    if (healthPointsInput && params.has('health')) {
+        const v = parseInt(params.get('health'), 10);
+        if (Number.isFinite(v)) healthPointsInput.value = String(v);
+    }
+}
+
+function syncUrlFromUI() {
+    const tankCountInput = document.getElementById('tankCount');
+    const gameModeSelect = document.getElementById('gameMode');
+    const predatorPercentInput = document.getElementById('predatorPercent');
+    const missilePercentInput = document.getElementById('missilePercent');
+    const healthPointsInput = document.getElementById('healthPoints');
+
+    const params = new URLSearchParams(window.location.search);
+
+    if (tankCountInput) params.set('tanks', String(parseInt(tankCountInput.value, 10) || 6));
+    if (gameModeSelect) params.set('mode', gameModeSelect.value === 'teams' ? 'teams' : 'random');
+
+    if (predatorPercentInput) {
+        const raw = predatorPercentInput.value.trim();
+        params.set('pred', raw === '' ? '15' : raw);
+    }
+
+    if (missilePercentInput) {
+        const raw = missilePercentInput.value.trim();
+        params.set('rockets', raw === '' ? '15' : raw);
+    }
+
+    if (healthPointsInput) {
+        const raw = healthPointsInput.value.trim();
+        params.set('health', raw === '' ? '100' : raw);
+    }
+
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, '', newUrl);
 }
 
 // Handle window resize
@@ -2080,5 +2157,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Start
+applySettingsFromUrlToUI();
 initGame();
 gameLoop();
