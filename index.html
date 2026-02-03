@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Tank Battle</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -56,7 +59,41 @@
             border-radius: 4px;
             text-align: left;
         }
+        #predatorPercent,
+        #missilePercent,
+        #healthPoints {
+            width: 90px;
+            padding: 8px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            background: #1a1a2e;
+            color: #fff;
+            border: 2px solid #e94560;
+            border-radius: 4px;
+            text-align: left;
+        }
+        #gameMode {
+            width: 140px;
+            padding: 8px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            background: #1a1a2e;
+            color: #fff;
+            border: 2px solid #e94560;
+            border-radius: 4px;
+            text-align: left;
+        }
         #tankCount:focus {
+            outline: none;
+            border-color: #ff6b6b;
+        }
+        #predatorPercent:focus,
+        #missilePercent:focus,
+        #healthPoints:focus {
+            outline: none;
+            border-color: #ff6b6b;
+        }
+        #gameMode:focus {
             outline: none;
             border-color: #ff6b6b;
         }
@@ -130,6 +167,17 @@
             <div id="controls">
                 <label for="tankCount">Tanks:</label>
                 <input type="text" id="tankCount" value="6">
+                <label for="gameMode">Mode:</label>
+                <select id="gameMode">
+                    <option value="random">Random</option>
+                    <option value="teams">Red / Blue</option>
+                </select>
+                <label for="predatorPercent">Predators %:</label>
+                <input type="text" id="predatorPercent" placeholder="15">
+                <label for="missilePercent">Rockets %:</label>
+                <input type="text" id="missilePercent" placeholder="15">
+                <label for="healthPoints">Health:</label>
+                <input type="text" id="healthPoints" placeholder="100">
                 <button onclick="restartGame()">NEW BATTLE</button>
                 <button onclick="togglePause()">PAUSE</button>
             </div>

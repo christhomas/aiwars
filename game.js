@@ -1,26 +1,54 @@
 // Game Constants
 let canvasWidth = 800;
 let canvasHeight = 600;
-const WALL_THICKNESS = 20;
-const TANK_SIZE = 30;
-const TANK_SPEED = 3; // 1.5x faster
-const BULLET_SPEED = 8;
-const BULLET_SIZE = 6;
-const MAX_HEALTH = 100;
-const DAMAGE_PER_HIT = 10;
-const ROTATION_SPEED = 4.5; // 1.5x faster
-const GRID_CELL_SIZE = 60; // For spatial partitioning
+const WALL_THICKNESS = 20; // Arena wall thickness (pixels)
+const TANK_SIZE = 30; // Tank body size (pixels)
+const TANK_SPEED = 3; // Tank movement speed (pixels per frame)
+const BULLET_SPEED = 8; // Bullet movement speed (pixels per frame)
+const BULLET_SIZE = 6; // Bullet radius/size used for collision + drawing (pixels)
+const DEFAULT_MAX_HEALTH = 100; // Default starting HP per tank
+const DAMAGE_PER_HIT = 10; // Bullet damage dealt per hit (HP)
+const ROTATION_SPEED = 4.5; // Tank rotation speed during random turning (degrees per frame)
+const GRID_CELL_SIZE = 60; // Spatial grid cell size for broadphase collision (pixels)
 const FIRE_INTERVAL = 60; // Frames between shots while moving (~1 second at 60fps)
-const PREDATOR_CHANCE = 0.15; // 15% chance for a tank to be a predator
-const RADAR_RANGE = 200; // Predator radar range in pixels
-const PREDATOR_TURN_SPEED = 6; // How fast predators turn toward targets
+const DEFAULT_PREDATOR_CHANCE = 0.15; // Default chance for a tank to start as a predator
+const RADAR_RANGE = 200; // Predator radar range (pixels)
+const PREDATOR_TURN_SPEED = 6; // Predator turn speed when steering toward targets (degrees per frame)
 const RADAR_SWEEP_SPEED = 3; // Degrees per frame for radar sweep
 const RADAR_SWEEP_ANGLE = 60; // Total sweep angle (±30 degrees from center)
-const MISSILE_CHANCE = 0.15; // 15% chance for missile ability
-const MISSILE_SPEED = 4;
-const MISSILE_TURN_SPEED = 5; // How fast missiles can turn
-const MISSILE_SEEK_RANGE = 400; // Homing range
-const MISSILE_FIRE_INTERVAL = 90; // Frames between missile shots
+const DEFAULT_MISSILE_CHANCE = 0.15; // 15% chance for missile ability
+const MISSILE_SPEED = 6; // Missile movement speed (pixels per frame)
+const MISSILE_TURN_SPEED = 5; // Missile turn speed (degrees per frame)
+const MISSILE_SEEK_RANGE = 400; // Missile homing seek radius (pixels)
+const MISSILE_FIRE_INTERVAL = 90; // Missile cooldown (frames)
+
+// Power-up tuning
+const POWERUP_SIZE = 14; // Power-up pickup radius (pixels)
+const POWERUP_SPAWN_INTERVAL_MS = 1000; // Spawn cadence (milliseconds)
+const MAX_POWERUPS = 100; // Max number of power-ups allowed on the map at once
+const POWERUP_HEAL_FRACTION = 0.5; // Heal amount as a fraction of maxHealth (e.g. 0.5 = +50% max HP)
+
+// Power-up timeouts: how long each power-up stays on the ground before disappearing (milliseconds)
+const POWERUP_GROUND_LIFETIME_HEAL_MS = 30000; // heal
+const POWERUP_GROUND_LIFETIME_SHIELD_MS = 30000; // shield
+const POWERUP_GROUND_LIFETIME_SPEED_MS = 30000; // speed
+const POWERUP_GROUND_LIFETIME_ROCKET_MS = 30000; // rocket
+const POWERUP_GROUND_LIFETIME_PREDATOR_MS = 30000; // predator
+const POWERUP_GROUND_LIFETIME_DOUBLER_MS = 60000; // doubler
+
+// Power-up spawn weights: relative chance of spawning each type when a power-up spawns
+// Example: heal=2 and others=1 means heal is ~2x as likely as each other type.
+const POWERUP_WEIGHT_HEAL = 1;
+const POWERUP_WEIGHT_SHIELD = 1;
+const POWERUP_WEIGHT_SPEED = 1;
+const POWERUP_WEIGHT_ROCKET = 1;
+const POWERUP_WEIGHT_PREDATOR = 1;
+const POWERUP_WEIGHT_DOUBLER = 1;
+
+// Power-up effect durations (milliseconds)
+const SHIELD_DURATION_MS = 30000; // How long the shield lasts after pickup
+const SPEED_DURATION_MS = 30000; // How long the speed boost lasts after pickup
+const SPEED_MULTIPLIER = 2; // Movement multiplier while speed boost is active
 
 // Game state
 let canvas, ctx, canvasWrapper;
@@ -32,6 +60,16 @@ let paused = false;
 let winner = null;
 let numTanks = 6;
 let frameCount = 0;
+let nowMs = 0;
+let nextPowerUpSpawnMs = 0;
+
+let gameMode = 'random';
+
+let nextTankId = 0;
+
+let predatorChance = DEFAULT_PREDATOR_CHANCE;
+let missileChance = DEFAULT_MISSILE_CHANCE;
+let maxHealth = DEFAULT_MAX_HEALTH;
 
 // Spatial partitioning grid
 let spatialGrid = {};
@@ -47,11 +85,17 @@ const bulletPool = [];
 const explosionPool = [];
 const particlePool = [];
 const fireRingPool = [];
+const blessingRingPool = [];
 const missilePool = [];
+const powerUpPool = [];
+const shieldPingPool = [];
 
 // Fire rings from tank deaths
 let fireRings = [];
+let blessingRings = [];
 let missiles = [];
+let powerUps = [];
+let shieldPings = [];
 
 // Pre-computed values
 const DEG_TO_RAD = Math.PI / 180;
@@ -62,6 +106,187 @@ const cosTable = new Float32Array(360);
 for (let i = 0; i < 360; i++) {
     sinTable[i] = Math.sin((i - 90) * DEG_TO_RAD);
     cosTable[i] = Math.cos((i - 90) * DEG_TO_RAD);
+}
+
+class BlessingRing {
+    constructor(x, y) {
+        this.reset(x, y);
+    }
+
+    reset(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 8;
+        this.expandSpeed = 10;
+        this.thickness = 16;
+        this.active = true;
+        this.opacity = 1;
+        const maxDistX = Math.max(x, canvasWidth - x);
+        const maxDistY = Math.max(y, canvasHeight - y);
+        this.maxRadius = Math.sqrt(maxDistX * maxDistX + maxDistY * maxDistY) + 50;
+    }
+
+    update() {
+        if (!this.active) return;
+
+        this.radius += this.expandSpeed;
+        this.thickness = Math.max(4, 16 - this.radius * 0.02);
+        this.opacity = Math.max(0, 1 - (this.radius / this.maxRadius));
+
+        if (this.radius > this.maxRadius) {
+            this.active = false;
+        }
+    }
+
+    draw() {
+        if (!this.active || this.opacity <= 0) return;
+
+        const x = this.x | 0;
+        const y = this.y | 0;
+
+        ctx.save();
+        ctx.globalAlpha = this.opacity;
+
+        // Outer glow
+        ctx.beginPath();
+        ctx.arc(x, y, this.radius + this.thickness, 0, Math.PI * 2);
+        ctx.arc(x, y, Math.max(0, this.radius - this.thickness), 0, Math.PI * 2, true);
+        ctx.fillStyle = `rgba(255, 255, 255, ${this.opacity * 0.35})`;
+        ctx.fill();
+
+        // Main ring
+        ctx.beginPath();
+        ctx.arc(x, y, this.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${this.opacity})`;
+        ctx.lineWidth = this.thickness;
+        ctx.stroke();
+
+        ctx.restore();
+    }
+}
+
+function findSpawnPosition() {
+    const margin = WALL_THICKNESS + TANK_SIZE;
+    const minDist = TANK_SIZE * 1.1;
+    const minDistSq = minDist * minDist;
+    const maxAttempts = 200;
+
+    for (let attempts = 0; attempts < maxAttempts; attempts++) {
+        const x = margin + Math.random() * (canvasWidth - 2 * margin);
+        const y = margin + Math.random() * (canvasHeight - 2 * margin);
+
+        let ok = true;
+        for (let i = 0; i < tanks.length; i++) {
+            if (tanks[i].state === TankState.DEAD) continue;
+            const dx = x - tanks[i].x;
+            const dy = y - tanks[i].y;
+            if (dx * dx + dy * dy < minDistSq) {
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok) return { x, y };
+    }
+
+    return {
+        x: margin + Math.random() * (canvasWidth - 2 * margin),
+        y: margin + Math.random() * (canvasHeight - 2 * margin)
+    };
+}
+
+function findSpawnPositionNear(originX, originY) {
+    const margin = WALL_THICKNESS + TANK_SIZE;
+    const minDist = TANK_SIZE * 1.1;
+    const minDistSq = minDist * minDist;
+    const maxAttempts = 80;
+
+    for (let attempts = 0; attempts < maxAttempts; attempts++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = (TANK_SIZE * 2.2) + Math.random() * (TANK_SIZE * 2.8);
+        const x = originX + Math.cos(a) * r;
+        const y = originY + Math.sin(a) * r;
+
+        if (x < margin || x > canvasWidth - margin || y < margin || y > canvasHeight - margin) continue;
+
+        let ok = true;
+        for (let i = 0; i < tanks.length; i++) {
+            if (tanks[i].state === TankState.DEAD) continue;
+            const dx = x - tanks[i].x;
+            const dy = y - tanks[i].y;
+            if (dx * dx + dy * dy < minDistSq) {
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok) return { x, y };
+    }
+
+    return null;
+}
+
+function spawnExtraTank(team, baseAngle, originX, originY) {
+    const near = (typeof originX === 'number' && typeof originY === 'number')
+        ? findSpawnPositionNear(originX, originY)
+        : null;
+    const pos = near || findSpawnPosition();
+    const id = nextTankId++;
+    const tank = new Tank(pos.x, pos.y, generateTankColor(id), id);
+
+    if (typeof baseAngle === 'number') {
+        tank.angle = ((baseAngle + 60) % 360) | 0;
+    }
+
+    if (gameMode === 'teams') {
+        tank.team = team === 'blue' ? 'blue' : 'red';
+        tank.colorObj = tank.team === 'red'
+            ? { hex: '#ff3b3b', r: 255, g: 59, b: 59 }
+            : { hex: '#2f80ff', r: 47, g: 128, b: 255 };
+        tank.color = tank.colorObj.hex;
+        tank.sprite = getTankSprite(tank.colorObj);
+    }
+
+    tanks.push(tank);
+    numTanks = tanks.length;
+}
+
+class ShieldPing {
+    constructor(x, y, baseRadius) {
+        this.reset(x, y, baseRadius);
+    }
+
+    reset(x, y, baseRadius) {
+        this.x = x;
+        this.y = y;
+        this.r = baseRadius;
+        this.life = 1;
+        this.active = true;
+    }
+
+    update() {
+        if (!this.active) return;
+        this.r += 3.5;
+        this.life -= 0.08;
+        if (this.life <= 0) this.active = false;
+    }
+
+    draw() {
+        if (!this.active) return;
+        ctx.beginPath();
+        ctx.arc(this.x | 0, this.y | 0, this.r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${this.life})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+    }
+}
+
+function spawnShieldPing(tank) {
+    const baseRadius = tank.size * 2;
+    let ping = shieldPingPool.pop();
+    if (ping) ping.reset(tank.x, tank.y, baseRadius);
+    else ping = new ShieldPing(tank.x, tank.y, baseRadius);
+    shieldPings.push(ping);
 }
 
 function fastSin(angle) {
@@ -123,6 +348,189 @@ function darkenColor(colorObj, amount) {
     const g = Math.max(0, colorObj.g - amount);
     const b = Math.max(0, colorObj.b - amount);
     return `rgb(${r},${g},${b})`;
+}
+
+class PowerUp {
+    constructor(x, y, type) {
+        this.reset(x, y, type);
+    }
+
+    reset(x, y, type) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.active = true;
+        let lifetimeMs = POWERUP_GROUND_LIFETIME_HEAL_MS;
+        if (type === 'shield') lifetimeMs = POWERUP_GROUND_LIFETIME_SHIELD_MS;
+        else if (type === 'speed') lifetimeMs = POWERUP_GROUND_LIFETIME_SPEED_MS;
+        else if (type === 'rocket') lifetimeMs = POWERUP_GROUND_LIFETIME_ROCKET_MS;
+        else if (type === 'predator') lifetimeMs = POWERUP_GROUND_LIFETIME_PREDATOR_MS;
+        else if (type === 'doubler') lifetimeMs = POWERUP_GROUND_LIFETIME_DOUBLER_MS;
+        this.expiresAtMs = nowMs + lifetimeMs;
+    }
+
+    draw() {
+        if (!this.active) return;
+
+        const x = this.x | 0;
+        const y = this.y | 0;
+
+        ctx.save();
+
+        const hueCycle = 215 + 15 * Math.sin(frameCount * 0.05);
+        const pulse = 0.5 + 0.5 * Math.sin(frameCount * 0.12);
+
+        // Base circle
+        ctx.beginPath();
+        ctx.arc(x, y, POWERUP_SIZE, 0, Math.PI * 2);
+        if (this.type === 'shield') {
+            ctx.shadowBlur = 16 + 10 * pulse;
+            ctx.shadowColor = `hsla(${hueCycle}, 100%, 55%, ${0.7 + 0.3 * pulse})`;
+            ctx.fillStyle = `hsla(${hueCycle}, 100%, ${38 + 22 * pulse}%, 0.98)`;
+        } else if (this.type === 'speed') {
+            ctx.fillStyle = 'rgba(255, 215, 0, 0.95)';
+        } else if (this.type === 'rocket') {
+            ctx.fillStyle = 'rgba(155, 80, 255, 0.92)';
+        } else if (this.type === 'predator') {
+            ctx.fillStyle = 'rgba(255, 0, 255, 0.88)';
+        } else if (this.type === 'doubler') {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        } else {
+            ctx.fillStyle = 'rgba(0, 255, 120, 0.85)';
+        }
+        ctx.fill();
+
+        // reset shadow so outline stays crisp
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        if (this.type === 'shield') {
+            // Shield icon
+            ctx.font = 'bold 16px serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowBlur = 10 + 8 * pulse;
+            ctx.shadowColor = `hsla(${hueCycle}, 100%, 55%, ${0.6 + 0.4 * pulse})`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
+            ctx.fillText('★', x, y + 1);
+            ctx.shadowBlur = 0;
+        } else if (this.type === 'speed') {
+            ctx.beginPath();
+            ctx.arc(x, y, POWERUP_SIZE * 0.45, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        } else if (this.type === 'rocket') {
+            ctx.font = '16px serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
+            ctx.fillText('🚀', x, y + 1);
+        } else if (this.type === 'predator') {
+            ctx.font = '16px serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
+            ctx.fillText('😈', x, y + 1);
+        } else if (this.type === 'doubler') {
+            ctx.font = '16px serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.fillText('😇', x, y + 1);
+        } else {
+            // Cross
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            const w = 4;
+            const h = 10;
+            ctx.fillRect(x - (w / 2), y - (h / 2), w, h);
+            ctx.fillRect(x - (h / 2), y - (w / 2), h, w);
+        }
+
+        ctx.restore();
+    }
+}
+
+function spawnPowerUp() {
+    if (powerUps.length >= MAX_POWERUPS) return;
+
+    const margin = WALL_THICKNESS + POWERUP_SIZE + 4;
+    const x = margin + Math.random() * (canvasWidth - 2 * margin);
+    const y = margin + Math.random() * (canvasHeight - 2 * margin);
+    const totalWeight = POWERUP_WEIGHT_HEAL + POWERUP_WEIGHT_SHIELD + POWERUP_WEIGHT_SPEED + POWERUP_WEIGHT_ROCKET + POWERUP_WEIGHT_PREDATOR + POWERUP_WEIGHT_DOUBLER;
+    let pick = Math.random() * totalWeight;
+    let type;
+    if ((pick -= POWERUP_WEIGHT_HEAL) < 0) type = 'heal';
+    else if ((pick -= POWERUP_WEIGHT_SHIELD) < 0) type = 'shield';
+    else if ((pick -= POWERUP_WEIGHT_SPEED) < 0) type = 'speed';
+    else if ((pick -= POWERUP_WEIGHT_ROCKET) < 0) type = 'rocket';
+    else if ((pick -= POWERUP_WEIGHT_PREDATOR) < 0) type = 'predator';
+    else type = 'doubler';
+
+    let p = powerUpPool.pop();
+    if (p) p.reset(x, y, type);
+    else p = new PowerUp(x, y, type);
+
+    powerUps.push(p);
+}
+
+function updatePowerUpPickups() {
+    if (powerUps.length === 0) return;
+
+    const pickupRadius = (TANK_SIZE / 2 + POWERUP_SIZE);
+    const pickupDistSq = pickupRadius * pickupRadius;
+
+    for (let i = powerUps.length - 1; i >= 0; i--) {
+        const p = powerUps[i];
+        if (nowMs >= p.expiresAtMs) {
+            p.active = false;
+            powerUpPool.push(p);
+            powerUps.splice(i, 1);
+            continue;
+        }
+
+        let pickedUp = false;
+
+        for (let t = 0; t < tanks.length; t++) {
+            const tank = tanks[t];
+            if (tank.state === TankState.DEAD) continue;
+
+            const dx = tank.x - p.x;
+            const dy = tank.y - p.y;
+            if (dx * dx + dy * dy <= pickupDistSq) {
+                if (p.type === 'shield') {
+                    tank.shieldUntilMs = Math.max(tank.shieldUntilMs || 0, nowMs + SHIELD_DURATION_MS);
+                } else if (p.type === 'speed') {
+                    tank.speedUntilMs = Math.max(tank.speedUntilMs || 0, nowMs + SPEED_DURATION_MS);
+                } else if (p.type === 'rocket') {
+                    tank.hasMissiles = true;
+                    tank.missileTimer = (Math.random() * MISSILE_FIRE_INTERVAL) | 0;
+                } else if (p.type === 'predator') {
+                    tank.isPredator = true;
+                } else if (p.type === 'doubler') {
+                    let ring = blessingRingPool.pop();
+                    if (ring) ring.reset(tank.x, tank.y);
+                    else ring = new BlessingRing(tank.x, tank.y);
+                    blessingRings.push(ring);
+                    spawnExtraTank(gameMode === 'teams' ? tank.team : null, tank.angle, tank.x, tank.y);
+                } else {
+                    const healAmount = Math.ceil(maxHealth * POWERUP_HEAL_FRACTION);
+                    tank.health = Math.min(maxHealth, tank.health + healAmount);
+                }
+                pickedUp = true;
+                break;
+            }
+        }
+
+        if (pickedUp) {
+            p.active = false;
+            powerUpPool.push(p);
+            powerUps.splice(i, 1);
+        }
+    }
 }
 
 // Spatial grid helpers
@@ -211,8 +619,9 @@ class Tank {
         this.y = y;
         this.colorObj = colorObj;
         this.color = colorObj.hex;
+        this.team = null;
         this.angle = (Math.random() * 360) | 0;
-        this.health = MAX_HEALTH;
+        this.health = maxHealth;
         this.state = TankState.MOVING;
         this.rotationRemaining = 0;
         this.rotationDirection = 1;
@@ -222,7 +631,7 @@ class Tank {
         this.movingFireTimer = (Math.random() * FIRE_INTERVAL) | 0; // Stagger initial fire times
 
         // Predator properties
-        this.isPredator = Math.random() < PREDATOR_CHANCE;
+        this.isPredator = Math.random() < predatorChance;
         this.rainbowHue = Math.random() * 360;
         this.targetTank = null;
         this.radarPulse = 0;
@@ -230,8 +639,11 @@ class Tank {
         this.radarSweepDirection = 1; // 1 = sweeping right, -1 = sweeping left
 
         // Missile properties
-        this.hasMissiles = Math.random() < MISSILE_CHANCE;
+        this.hasMissiles = Math.random() < missileChance;
         this.missileTimer = (Math.random() * MISSILE_FIRE_INTERVAL) | 0;
+
+        this.shieldUntilMs = 0;
+        this.speedUntilMs = 0;
     }
 
     update() {
@@ -266,9 +678,40 @@ class Tank {
                 this.radarSweepDirection = 1;
             }
 
-            // Scan for targets with radar beam
-            const target = this.findTargetWithRadar();
-            if (target) {
+            // Prefer power-ups over enemy tanks when both are available
+            let closestPowerUp = null;
+            let closestDistSq = RADAR_RANGE * RADAR_RANGE;
+
+            for (let i = 0; i < powerUps.length; i++) {
+                const p = powerUps[i];
+                const dx = p.x - this.x;
+                const dy = p.y - this.y;
+                const distSq = dx * dx + dy * dy;
+                if (distSq < closestDistSq) {
+                    closestDistSq = distSq;
+                    closestPowerUp = p;
+                }
+            }
+
+            const target = closestPowerUp ? null : this.findTargetWithRadar();
+            if (closestPowerUp) {
+                this.targetTank = null;
+
+                const dx = closestPowerUp.x - this.x;
+                const dy = closestPowerUp.y - this.y;
+                let targetAngle = (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
+
+                let angleDiff = targetAngle - this.angle;
+                if (angleDiff > 180) angleDiff -= 360;
+                if (angleDiff < -180) angleDiff += 360;
+
+                if (Math.abs(angleDiff) > PREDATOR_TURN_SPEED) {
+                    this.angle += angleDiff > 0 ? PREDATOR_TURN_SPEED : -PREDATOR_TURN_SPEED;
+                    this.angle = (this.angle + 360) % 360 | 0;
+                } else {
+                    this.angle = targetAngle | 0;
+                }
+            } else if (target) {
                 this.targetTank = target;
                 // Calculate angle to target
                 const dx = target.x - this.x;
@@ -294,8 +737,9 @@ class Tank {
 
         const cos = fastCos(this.angle);
         const sin = fastSin(this.angle);
-        const nextX = this.x + cos * TANK_SPEED;
-        const nextY = this.y + sin * TANK_SPEED;
+        const speedMult = (this.speedUntilMs && nowMs < this.speedUntilMs) ? SPEED_MULTIPLIER : 1;
+        const nextX = this.x + cos * TANK_SPEED * speedMult;
+        const nextY = this.y + sin * TANK_SPEED * speedMult;
 
         if (this.checkWallCollision(nextX, nextY) || this.checkTankCollision(nextX, nextY)) {
             this.startRotation();
@@ -330,6 +774,13 @@ class Tank {
         } else {
             missile = new Missile(missileX, missileY, this.angle, this.colorObj, this.id);
         }
+
+        if (gameMode === 'teams') {
+            missile.ownerTeam = this.team;
+            missile.targetMode = this.team === 'red' ? 'blue' : 'red';
+        } else {
+            missile.targetMode = 'random';
+        }
         missiles.push(missile);
     }
 
@@ -347,6 +798,7 @@ class Tank {
         for (let i = 0; i < nearby.length; i++) {
             const tank = nearby[i];
             if (tank.id === this.id || tank.state === TankState.DEAD) continue;
+            if (gameMode === 'teams' && this.team && tank.team === this.team) continue;
 
             const dx = tank.x - this.x;
             const dy = tank.y - this.y;
@@ -372,7 +824,9 @@ class Tank {
     }
 
     checkWallCollision(x, y) {
-        const halfSize = this.size / 2;
+        const tankRadius = this.size * 0.55;
+        const shieldRadius = (this.shieldUntilMs && nowMs < this.shieldUntilMs) ? this.size * 2 : 0;
+        const halfSize = Math.max(tankRadius, shieldRadius);
         return (
             x - halfSize < WALL_THICKNESS ||
             x + halfSize > canvasWidth - WALL_THICKNESS ||
@@ -382,7 +836,10 @@ class Tank {
     }
 
     checkTankCollision(x, y) {
-        const nearby = getNearbyEntities(x, y, this.size * 2);
+        const tankRadius = this.size * 0.55;
+        const shieldRadius = (this.shieldUntilMs && nowMs < this.shieldUntilMs) ? this.size * 2 : 0;
+        const thisRadius = Math.max(tankRadius, shieldRadius);
+        const nearby = getNearbyEntities(x, y, thisRadius * 2);
         for (let i = 0; i < nearby.length; i++) {
             const tank = nearby[i];
             if (tank.id === this.id || tank.state === TankState.DEAD) continue;
@@ -390,7 +847,10 @@ class Tank {
             const dx = x - tank.x;
             const dy = y - tank.y;
             const distSq = dx * dx + dy * dy;
-            const minDist = this.size;
+            const otherTankRadius = tank.size * 0.55;
+            const otherShieldRadius = (tank.shieldUntilMs && nowMs < tank.shieldUntilMs) ? tank.size * 2 : 0;
+            const otherRadius = Math.max(otherTankRadius, otherShieldRadius);
+            const minDist = thisRadius + otherRadius;
 
             if (distSq < minDist * minDist) {
                 return true;
@@ -402,7 +862,7 @@ class Tank {
     startRotation() {
         this.state = TankState.ROTATING;
         this.rotationDirection = Math.random() < 0.5 ? -1 : 1;
-        this.rotationRemaining = 45 + Math.random() * 675;
+        this.rotationRemaining = 45 + Math.random() * 315;
     }
 
     rotate() {
@@ -445,6 +905,10 @@ class Tank {
         } else {
             bullet = new Bullet(bulletX, bulletY, this.angle, this.colorObj, this.id);
         }
+
+        if (gameMode === 'teams') {
+            bullet.ownerTeam = this.team;
+        }
         bullets.push(bullet);
     }
 
@@ -456,6 +920,9 @@ class Tank {
     }
 
     takeDamage(amount) {
+        if (this.shieldUntilMs && nowMs < this.shieldUntilMs) {
+            return;
+        }
         this.health -= amount;
         if (this.health <= 0) {
             this.health = 0;
@@ -635,8 +1102,26 @@ class Tank {
             ctx.fillText('🚀', x + (this.isPredator ? 10 : 0), y - this.size / 2 - 12);
         }
 
+        // Shield indicator
+        if (this.shieldUntilMs && nowMs < this.shieldUntilMs) {
+            const hueCycle = 215 + 15 * Math.sin(frameCount * 0.05);
+            const pulse = 0.5 + 0.5 * Math.sin(frameCount * 0.12);
+            const shieldRadius = this.size * 2;
+            ctx.beginPath();
+            ctx.arc(x, y, shieldRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = `hsla(${hueCycle}, 100%, ${45 + 20 * pulse}%, 0.95)`;
+            ctx.lineWidth = 5;
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(x, y, shieldRadius + 10, 0, Math.PI * 2);
+            ctx.strokeStyle = `hsla(${hueCycle}, 100%, ${50 + 15 * pulse}%, ${0.18 + 0.22 * pulse})`;
+            ctx.lineWidth = 10;
+            ctx.stroke();
+        }
+
         // Health bar (only draw if damaged)
-        if (this.health < MAX_HEALTH) {
+        if (this.health < maxHealth) {
             const barWidth = this.size;
             const barHeight = 4;
             const barX = (x - barWidth / 2) | 0;
@@ -645,7 +1130,7 @@ class Tank {
             ctx.fillStyle = '#333';
             ctx.fillRect(barX, barY, barWidth, barHeight);
 
-            const healthPercent = this.health / MAX_HEALTH;
+            const healthPercent = this.health / maxHealth;
             ctx.fillStyle = healthPercent > 0.5 ? '#0f0' : healthPercent > 0.25 ? '#ff0' : '#f00';
             ctx.fillRect(barX, barY, (barWidth * healthPercent) | 0, barHeight);
         }
@@ -664,6 +1149,7 @@ class Bullet {
         this.colorObj = colorObj;
         this.color = colorObj.hex;
         this.ownerId = ownerId;
+        this.ownerTeam = null;
         this.active = true;
         this.size = BULLET_SIZE;
         this.cos = fastCos(angle);
@@ -684,18 +1170,25 @@ class Bullet {
         }
 
         // Tank collision using spatial grid
-        const nearby = getNearbyEntities(this.x, this.y, TANK_SIZE);
+        const nearby = getNearbyEntities(this.x, this.y, TANK_SIZE * 3);
         for (let i = 0; i < nearby.length; i++) {
             const tank = nearby[i];
             if (tank.id === this.ownerId || tank.state === TankState.DEAD) continue;
+            if (gameMode === 'teams' && this.ownerTeam && tank.team === this.ownerTeam) continue;
 
             const dx = this.x - tank.x;
             const dy = this.y - tank.y;
             const distSq = dx * dx + dy * dy;
-            const hitDist = tank.size / 2 + this.size / 2;
+            const shieldActive = tank.shieldUntilMs && nowMs < tank.shieldUntilMs;
+            const targetRadius = shieldActive ? tank.size * 2 : tank.size / 2;
+            const hitDist = targetRadius + this.size / 2;
 
             if (distSq < hitDist * hitDist) {
-                tank.takeDamage(DAMAGE_PER_HIT);
+                if (shieldActive) {
+                    spawnShieldPing(tank);
+                } else {
+                    tank.takeDamage(DAMAGE_PER_HIT);
+                }
                 this.active = false;
 
                 // Small hit explosion from pool
@@ -737,10 +1230,22 @@ class Missile {
         this.colorObj = colorObj;
         this.color = colorObj.hex;
         this.ownerId = ownerId;
+        this.ownerTeam = null;
+        this.targetMode = 'random';
         this.active = true;
         this.target = null;
         this.lifetime = 300; // Missiles explode after 5 seconds (60fps)
         this.trailParticles = [];
+    }
+
+    isValidTarget(tank) {
+        if (!tank) return false;
+        if (tank.id === this.ownerId) return false;
+        if (tank.state === TankState.DEAD) return false;
+
+        if (this.targetMode === 'red') return tank.team === 'red';
+        if (this.targetMode === 'blue') return tank.team === 'blue';
+        return true;
     }
 
     findTarget() {
@@ -750,7 +1255,7 @@ class Missile {
 
         for (let i = 0; i < nearby.length; i++) {
             const tank = nearby[i];
-            if (tank.id === this.ownerId || tank.state === TankState.DEAD) continue;
+            if (!this.isValidTarget(tank)) continue;
 
             const dx = tank.x - this.x;
             const dy = tank.y - this.y;
@@ -783,7 +1288,7 @@ class Missile {
         }
 
         // Find or update target
-        if (!this.target || this.target.state === TankState.DEAD) {
+        if (!this.isValidTarget(this.target)) {
             this.target = this.findTarget();
         }
 
@@ -848,18 +1353,25 @@ class Missile {
         }
 
         // Tank collision
-        const nearby = getNearbyEntities(this.x, this.y, TANK_SIZE);
+        const nearby = getNearbyEntities(this.x, this.y, TANK_SIZE * 3);
         for (let i = 0; i < nearby.length; i++) {
             const tank = nearby[i];
             if (tank.id === this.ownerId || tank.state === TankState.DEAD) continue;
+            if (!this.isValidTarget(tank)) continue;
 
             const dx = this.x - tank.x;
             const dy = this.y - tank.y;
             const distSq = dx * dx + dy * dy;
-            const hitDist = tank.size / 2 + 8;
+            const shieldActive = tank.shieldUntilMs && nowMs < tank.shieldUntilMs;
+            const targetRadius = shieldActive ? tank.size * 2 : tank.size / 2;
+            const hitDist = targetRadius + 8;
 
             if (distSq < hitDist * hitDist) {
-                tank.takeDamage(DAMAGE_PER_HIT * 2); // Missiles do double damage
+                if (shieldActive) {
+                    spawnShieldPing(tank);
+                } else {
+                    tank.takeDamage(DAMAGE_PER_HIT * 2); // Missiles do double damage
+                }
                 this.active = false;
 
                 // Explosion on hit
@@ -1143,6 +1655,46 @@ function initGame() {
     numTanks = Math.max(2, numTanks);
     tankCountInput.value = numTanks;
 
+    const predatorPercentInput = document.getElementById('predatorPercent');
+    if (predatorPercentInput) {
+        const raw = predatorPercentInput.value.trim();
+        if (raw === '') {
+            predatorChance = DEFAULT_PREDATOR_CHANCE;
+        } else {
+            const pct = parseFloat(raw);
+            predatorChance = Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) / 100 : DEFAULT_PREDATOR_CHANCE;
+        }
+    }
+
+    const missilePercentInput = document.getElementById('missilePercent');
+    if (missilePercentInput) {
+        const raw = missilePercentInput.value.trim();
+        if (raw === '') {
+            missileChance = DEFAULT_MISSILE_CHANCE;
+        } else {
+            const pct = parseFloat(raw);
+            missileChance = Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) / 100 : DEFAULT_MISSILE_CHANCE;
+        }
+    }
+
+    const healthPointsInput = document.getElementById('healthPoints');
+    if (healthPointsInput) {
+        const raw = healthPointsInput.value.trim();
+        if (raw === '') {
+            maxHealth = DEFAULT_MAX_HEALTH;
+        } else {
+            const hp = parseInt(raw);
+            maxHealth = Number.isFinite(hp) ? Math.max(1, hp) : DEFAULT_MAX_HEALTH;
+        }
+    }
+
+    const gameModeSelect = document.getElementById('gameMode');
+    if (gameModeSelect) {
+        gameMode = gameModeSelect.value === 'teams' ? 'teams' : 'random';
+    } else {
+        gameMode = 'random';
+    }
+
     // Resize canvas
     resizeCanvas();
 
@@ -1158,9 +1710,14 @@ function initGame() {
     missiles = [];
     explosions = [];
     fireRings = [];
+    blessingRings = [];
+    powerUps = [];
+    shieldPings = [];
     winner = null;
     gameRunning = true;
     frameCount = 0;
+    nextTankId = 0;
+    nextPowerUpSpawnMs = 0;
 
     // Spawn tanks
     const margin = WALL_THICKNESS + TANK_SIZE;
@@ -1195,7 +1752,17 @@ function initGame() {
         }
 
         usedPositions.push({ x, y });
-        tanks.push(new Tank(x, y, generateTankColor(i), i));
+        const id = nextTankId++;
+        const tank = new Tank(x, y, generateTankColor(id), id);
+        if (gameMode === 'teams') {
+            tank.team = (i % 2 === 0) ? 'red' : 'blue';
+            tank.colorObj = tank.team === 'red'
+                ? { hex: '#ff3b3b', r: 255, g: 59, b: 59 }
+                : { hex: '#2f80ff', r: 47, g: 128, b: 255 };
+            tank.color = tank.colorObj.hex;
+            tank.sprite = getTankSprite(tank.colorObj);
+        }
+        tanks.push(tank);
     }
 
     updateUI();
@@ -1249,7 +1816,61 @@ function drawArena() {
     ctx.drawImage(arenaCanvas, 0, 0);
 }
 
+function drawTeamCountsOverlay() {
+    if (gameMode !== 'teams') return;
+
+    let redAlive = 0;
+    let blueAlive = 0;
+    for (let i = 0; i < tanks.length; i++) {
+        if (tanks[i].state === TankState.DEAD) continue;
+        if (tanks[i].team === 'red') redAlive++;
+        else if (tanks[i].team === 'blue') blueAlive++;
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    const pad = Math.max(24, (canvasWidth * 0.03) | 0);
+    const fontPx = Math.max(48, (canvasHeight * 0.5) | 0);
+    ctx.font = `bold ${fontPx}px Pixelify Sans, Lucida Console, Monaco, monospace`;
+    ctx.textBaseline = 'alphabetic';
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ff3b3b';
+    ctx.fillText(String(redAlive), pad, canvasHeight - pad);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#2f80ff';
+    ctx.fillText(String(blueAlive), canvasWidth - pad, canvasHeight - pad);
+
+    ctx.restore();
+}
+
 function checkWinner() {
+    if (gameMode === 'teams') {
+        let redAlive = 0;
+        let blueAlive = 0;
+
+        for (let i = 0; i < tanks.length; i++) {
+            if (tanks[i].state === TankState.DEAD) continue;
+            if (tanks[i].team === 'red') redAlive++;
+            else if (tanks[i].team === 'blue') blueAlive++;
+        }
+
+        if (redAlive > 0 && blueAlive > 0) return;
+
+        gameRunning = false;
+        if (redAlive > 0) {
+            document.getElementById('winner').textContent = '🏆 RED TEAM WINS! 🏆';
+            document.getElementById('winner').style.color = '#ff3b3b';
+        } else if (blueAlive > 0) {
+            document.getElementById('winner').textContent = '🏆 BLUE TEAM WINS! 🏆';
+            document.getElementById('winner').style.color = '#2f80ff';
+        } else {
+            document.getElementById('winner').textContent = '💥 DRAW - ALL TANKS DESTROYED! 💥';
+        }
+        return;
+    }
+
     let aliveCount = 0;
     let lastAlive = null;
 
@@ -1272,8 +1893,13 @@ function checkWinner() {
     }
 }
 
-function gameLoop() {
+function gameLoop(timestamp) {
     frameCount++;
+
+    if (typeof timestamp === 'number') {
+        nowMs = timestamp;
+        if (!nextPowerUpSpawnMs) nextPowerUpSpawnMs = nowMs + POWERUP_SPAWN_INTERVAL_MS;
+    }
 
     if (!paused && gameRunning) {
         // Rebuild spatial grid
@@ -1288,6 +1914,13 @@ function gameLoop() {
         for (let i = 0; i < tanks.length; i++) {
             tanks[i].update();
         }
+
+        // Spawn and process power ups
+        if (nowMs >= nextPowerUpSpawnMs) {
+            spawnPowerUp();
+            nextPowerUpSpawnMs = nowMs + POWERUP_SPAWN_INTERVAL_MS;
+        }
+        updatePowerUpPickups();
 
         // Update bullets
         for (let i = bullets.length - 1; i >= 0; i--) {
@@ -1325,12 +1958,42 @@ function gameLoop() {
             }
         }
 
+        // Update blessing rings
+        for (let i = blessingRings.length - 1; i >= 0; i--) {
+            blessingRings[i].update();
+            if (!blessingRings[i].active) {
+                blessingRingPool.push(blessingRings[i]);
+                blessingRings.splice(i, 1);
+            }
+        }
+
+        // Update shield pings
+        for (let i = shieldPings.length - 1; i >= 0; i--) {
+            shieldPings[i].update();
+            if (!shieldPings[i].active) {
+                shieldPingPool.push(shieldPings[i]);
+                shieldPings.splice(i, 1);
+            }
+        }
+
         checkWinner();
         updateUI();
     }
 
     // Draw
     drawArena();
+
+    drawTeamCountsOverlay();
+
+    // Draw power ups
+    for (let i = 0; i < powerUps.length; i++) {
+        powerUps[i].draw();
+    }
+
+    // Draw shield pings
+    for (let i = 0; i < shieldPings.length; i++) {
+        shieldPings[i].draw();
+    }
 
     // Draw bullets
     for (let i = 0; i < bullets.length; i++) {
@@ -1355,6 +2018,11 @@ function gameLoop() {
     // Draw fire rings
     for (let i = 0; i < fireRings.length; i++) {
         fireRings[i].draw();
+    }
+
+    // Draw blessing rings
+    for (let i = 0; i < blessingRings.length; i++) {
+        blessingRings[i].draw();
     }
 
     // Pause overlay
@@ -1388,6 +2056,27 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('tankCount').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') restartGame();
     });
+
+    const predatorPercentInput = document.getElementById('predatorPercent');
+    if (predatorPercentInput) {
+        predatorPercentInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') restartGame();
+        });
+    }
+
+    const missilePercentInput = document.getElementById('missilePercent');
+    if (missilePercentInput) {
+        missilePercentInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') restartGame();
+        });
+    }
+
+    const healthPointsInput = document.getElementById('healthPoints');
+    if (healthPointsInput) {
+        healthPointsInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') restartGame();
+        });
+    }
 });
 
 // Start
