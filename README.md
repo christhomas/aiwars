@@ -6,7 +6,7 @@
 
 Simply open `index.html` in a modern web browser. No build step or server required.
 
-Or play it online at: https://christhomas.github.io/aiwars/
+Or play it online at: https://christhomas.github.io/ai.wars
 
 An autonomous tank battle simulator where AI-controlled tanks fight to the death in an arena. Watch as tanks with unique abilities clash using bullets, homing missiles, and predator tracking systems.
 
